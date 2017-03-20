@@ -5,23 +5,58 @@ require 'rack/mobile-detect'
 module MobileFu
   autoload :Helper, 'mobile-fu/helper'
 
+  module Mobilization
+    def stylesheet_link_tag(*sources)
+      mobilized_sources = Array.new
+
+      # Figure out where stylesheets live, which differs depending if the asset
+      # pipeline is used or not.
+      stylesheets_dir = config.stylesheets_dir # Rails.root/public/stylesheets
+
+      # Look for mobilized stylesheets in the app/assets path if asset pipeline
+      # is enabled, because public/stylesheets will be missing in development
+      # mode without precompiling assets first, and may also contain multiple
+      # stylesheets with similar names because of checksumming during
+      # precompilation.
+      if Rails.application.config.respond_to?(:assets) # don't break pre-rails3.1
+        if Rails.application.config.assets.enabled
+          stylesheets_dir = File.join(Rails.root, 'app/assets/stylesheets/')
+        end
+      end
+
+      device_names = respond_to?(:is_mobile_device?) && is_mobile_device? ? ['mobile', mobile_device.downcase] : []
+
+      sources.each do |source|
+        mobilized_sources << source
+
+        device_names.compact.each do |device_name|
+          # support ERB and/or SCSS extensions (e.g., mobile.css.erb, mobile.css.scss.erb)
+          possible_source = source.to_s.sub(/\.css.*$/, '') + "_#{device_name}"
+
+          mobilized_files = Dir.glob(File.join(stylesheets_dir, "#{possible_source}.css*")).map { |f| f.sub(stylesheets_dir, '') }
+          mobilized_sources += mobilized_files.map { |f| f.sub(/\.css.*/, '') }
+        end
+      end
+
+      super(*mobilized_sources)
+    end
+  end
+
   class Railtie < Rails::Railtie
     initializer "mobile-fu.configure" do |app|
       app.config.middleware.use Rack::MobileDetect
     end
 
-    if Rails::VERSION::MAJOR >= 3
-      initializer "mobile-fu.action_controller" do |app|
-        ActiveSupport.on_load :action_controller do
-          include ActionController::MobileFu
-        end
+    initializer "mobile-fu.action_controller" do |app|
+      ActiveSupport.on_load :action_controller do
+        include ActionController::MobileFu
       end
+    end
 
-      initializer "mobile-fu.action_view" do |app|
-        ActiveSupport.on_load :action_view do
-          include MobileFu::Helper
-          alias_method_chain :stylesheet_link_tag, :mobilization
-        end
+    initializer "mobile-fu.action_view" do |app|
+      ActiveSupport.on_load :action_view do
+        include MobileFu::Helper
+        prepend MobileFu::Mobilization
       end
     end
 
@@ -192,10 +227,4 @@ module ActionController
       end
     end
   end
-end
-
-if Rails::VERSION::MAJOR < 3
-  ActionController::Base.send :include, ActionController::MobileFu
-  ActionView::Base.send :include, MobileFu::Helper
-  ActionView::Base.send :alias_method_chain, :stylesheet_link_tag, :mobilization
 end
